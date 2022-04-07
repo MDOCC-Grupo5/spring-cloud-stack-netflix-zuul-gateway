@@ -1,26 +1,43 @@
-FROM maven:3.8.4-openjdk-11-slim as builder
+ARG MVN_VERSION=3.8.4
+ARG JDK_VERSION=11
+
+FROM maven:${MVN_VERSION}-openjdk-${JDK_VERSION}-slim as builder
 
 WORKDIR /build
 
-COPY src/ src/
-COPY pom.xml .
+COPY ./pom.xml .
+RUN mvn dependency:go-offline
+
+WORKDIR /tmp
+
+COPY ./pom.xml .
+COPY ./src/ src/
 
 RUN mvn clean package -DskipTests
 
-FROM adoptopenjdk:11.0.11_9-jre-hotspot-focal
+WORKDIR /tmp/target
+RUN java -Djarmode=layertools -jar *.jar extract
+
+FROM gcr.io/distroless/java:${JDK_VERSION}-nonroot as runtime
+
+USER nonroot:nonroot
+
+WORKDIR /application
+
+COPY --from=builder --chown=nonroot:nonroot /tmp/target/dependencies/ ./
+COPY --from=builder --chown=nonroot:nonroot /tmp/target/snapshot-dependencies/ ./
+COPY --from=builder --chown=nonroot:nonroot /tmp/target/spring-boot-loader/ ./
+COPY --from=builder --chown=nonroot:nonroot /tmp/target/application/ ./
 
 ENV SPRING_APP_PROFILE=prod
+ENV PORT=8080
 
-ARG uid=1001
-ARG gid=51
+ENV _JAVA_OPTIONS "-XX:MinRAMPercentage=60.0 -XX:MaxRAMPercentage=90.0 \
+-Djava.security.egd=file:/dev/./urandom \
+-Djava.awt.headless=true -Dfile.encoding=UTF-8 \
+-Dspring.output.ansi.enabled=ALWAYS \
+-Dspring.profiles.active=${SPRING_APP_PROFILE}"
 
-WORKDIR /app
+EXPOSE ${PORT}
 
-RUN addgroup --gid $gid app \
-    && adduser --disabled-password --gecos "" --no-create-home --uid $uid --gid $gid app
-
-COPY --from=builder --chown=app:app /build/target/*.jar app.jar
-
-USER app
-
-ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-Dspring.profiles.active=${SPRING_APP_PROFILE}", "-jar", "app.jar"]
+ENTRYPOINT ["java", "org.springframework.boot.loader.JarLauncher"]
